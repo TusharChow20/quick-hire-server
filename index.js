@@ -1,6 +1,7 @@
 const express = require("express");
 var cors = require("cors");
 require("dotenv").config();
+const bcrypt = require("bcryptjs");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -16,18 +17,87 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
+app.get("/", (req, res) => {
+  res.send("Server is running successfully 🚀");
+});
+app.listen(port, () => {
+  console.log(`Server is running on port ${port}`);
+});
 async function run() {
   try {
     // Connect the client to the server	(optional starting in v4.7)
     await client.connect();
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
+
+    const myDB = client.db("QuickHire");
+    const userCollection = myDB.collection("users");
+
+    // users api ###########################################
+    app.post("/api/auth/register", async (req, res) => {
+      try {
+        const { name, email, password } = req.body;
+
+        // validation
+        const errors = [];
+        if (!name || !name.trim()) errors.push("name is required");
+        if (!email) errors.push("email is required");
+
+        if (!password) errors.push("password is required");
+        else if (password.length < 6)
+          errors.push("password must be at least 6 characters");
+
+        if (errors.length > 0) {
+          return res.status(400).json({ success: false, errors });
+        }
+
+        // duplicate check
+        const existing = await userCollection.findOne({
+          email: email.toLowerCase(),
+        });
+        if (existing) {
+          return res.status(409).json({
+            success: false,
+            message: "An account with this email already exists",
+          });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 12);
+
+        const newUser = {
+          name: name.trim(),
+          email: email.toLowerCase().trim(),
+          password: hashedPassword,
+          role: "user",
+          avatar: null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+
+        const result = await userCollection.insertOne(newUser);
+
+        // never return password
+        const { password: _, ...userWithoutPassword } = newUser;
+
+        res.status(201).json({
+          success: true,
+          message: "Account created successfully",
+          user: { _id: result.insertedId, ...userWithoutPassword },
+        });
+      } catch (error) {
+        console.error("POST /api/auth/register error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to create account" });
+      }
+    });
+
     console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!",
+      `Pinged your deployment. You successfully connected to MongoDB!${port}`,
     );
   } finally {
     // Ensures that the client will close when you finish/error
-    await client.close();
+    // await client.close();
   }
 }
 run().catch(console.dir);
