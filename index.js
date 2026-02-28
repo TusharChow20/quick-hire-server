@@ -32,6 +32,7 @@ async function run() {
 
     const myDB = client.db("QuickHire");
     const userCollection = myDB.collection("users");
+    const jobsCollection = myDB.collection("jobs");
 
     // users api ###########################################
 
@@ -129,6 +130,77 @@ async function run() {
       } catch (error) {
         console.error("POST /api/auth/login error:", error);
         res.status(500).json({ success: false, message: "Login failed" });
+      }
+    });
+    // -------------------------------- GET ALL JOBS --------------------------------
+    app.get("/api/jobs", async (req, res) => {
+      try {
+        const { search, category, type, featured } = req.query;
+
+        let query = {};
+
+        if (search) {
+          query.$or = [
+            { title: { $regex: search, $options: "i" } },
+            { company: { $regex: search, $options: "i" } },
+          ];
+        }
+
+        if (category) query.category = category;
+        if (type) query.type = type;
+        if (featured === "true") query.isFeatured = true;
+
+        const jobs = await jobsCollection
+          .find(query)
+          .sort({ created_at: -1 })
+          .toArray();
+
+        res.json({ success: true, count: jobs.length, jobs });
+      } catch (error) {
+        console.error("GET /api/jobs error:", error);
+        res.status(500).json({ success: false });
+      }
+    });
+    // featured job --------------------------------------------------------home
+    app.get("/api/jobs/featured", async (req, res) => {
+      try {
+        const jobs = await jobsCollection
+          .find({ isFeatured: true })
+          .sort({ created_at: -1 })
+          .limit(8)
+          .toArray();
+
+        res.json({ success: true, jobs });
+      } catch (error) {
+        res.status(500).json({ success: false });
+      }
+    });
+    //  f--------------------------------------------for cattegory---------------
+    app.get("/api/jobs/categories", async (req, res) => {
+      try {
+        const categories = await jobsCollection.distinct("category");
+
+        res.json({ success: true, categories });
+      } catch (error) {
+        res.status(500).json({ success: false });
+      }
+    });
+
+    //lastest job//////////////////////////////-----------------
+    app.get("/api/jobs/latest", async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit) || 8;
+        const jobs = await jobsCollection
+          .find({})
+          .sort({ created_at: -1 })
+          .limit(limit)
+          .toArray();
+        res.json({ success: true, jobs });
+      } catch (error) {
+        console.error("GET /api/jobs/latest:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch latest jobs" });
       }
     });
 
