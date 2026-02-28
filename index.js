@@ -118,7 +118,6 @@ async function run() {
       }
     });
 
-
     //--------------------------------------featured//////////////////////
     app.get("/api/jobs/featured", async (req, res) => {
       try {
@@ -174,32 +173,109 @@ async function run() {
     // all jobs--------------------------------------------------------
     app.get("/api/jobs", async (req, res) => {
       try {
-        const { search, category, type, featured } = req.query;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 12;
+        const skip = (page - 1) * limit;
+
+        const {
+          search,
+          category,
+          type,
+          location,
+          featured,
+          sortBy,
+          salary_min,
+          salary_max,
+        } = req.query;
         let query = {};
 
+        // Full-text search across title, company, description
         if (search) {
           query.$or = [
             { title: { $regex: search, $options: "i" } },
             { company: { $regex: search, $options: "i" } },
+            { description: { $regex: search, $options: "i" } },
           ];
         }
-        if (category) query.category = category;
-        if (type) query.type = type;
+
+        // Exact-ish filters (case-insensitive partial match)
+        if (category && category !== "All")
+          query.category = { $regex: category, $options: "i" };
+        if (type && type !== "All")
+          query.type = { $regex: type, $options: "i" };
+
+        if (location && location !== "All") {
+          const locationMap = {
+            "United States": "USA|United States",
+            "United Kingdom": "UK|United Kingdom",
+            Germany: "Germany",
+            France: "France",
+            Spain: "Spain",
+            Switzerland: "Switzerland",
+            Canada: "Canada",
+            Remote: "Remote",
+          };
+          const pattern = locationMap[location] || location;
+          query.location = { $regex: pattern, $options: "i" };
+        }
+
         if (featured === "true") query.isFeatured = true;
 
+        // ── Salary range filter ──────────────────────────────
+        if (salary_min || salary_max) {
+          query.$and = query.$and || [];
+
+          if (salary_min) {
+            query.$and.push({
+              $or: [
+                { salary_max: { $gte: parseInt(salary_min) } }, // max is at least min
+                { salary_min: { $gte: parseInt(salary_min) } }, // or min itself qualifies
+              ],
+            });
+          }
+          if (salary_max) {
+            query.$and.push({
+              $or: [
+                { salary_min: { $lte: parseInt(salary_max) } }, // min is within range
+                { salary_max: { $lte: parseInt(salary_max) } }, // or max is within range
+              ],
+            });
+          }
+        }
+
+        // Sort
+        let sort = { created_at: -1 };
+        if (sortBy === "oldest") sort = { created_at: 1 };
+        if (sortBy === "title_asc") sort = { title: 1 };
+        if (sortBy === "title_desc") sort = { title: -1 };
+
+        const total = await jobsCollection.countDocuments(query);
         const jobs = await jobsCollection
           .find(query)
-          .sort({ created_at: -1 })
+          .sort(sort)
+          .skip(skip)
+          .limit(limit)
           .toArray();
 
-        res.json({ success: true, count: jobs.length, jobs });
+        res.json({
+          success: true,
+          jobs,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
+        });
       } catch (error) {
         console.error("GET /api/jobs error:", error);
-        res.status(500).json({ success: false });
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch jobs" });
       }
     });
 
-    //  ------------------------------------job detailss---------------------
+    //  ------------------------------------job details---------------
     app.get("/api/jobs/:id", async (req, res) => {
       try {
         const { id } = req.params;
