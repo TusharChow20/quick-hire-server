@@ -34,6 +34,8 @@ async function run() {
     const userCollection = myDB.collection("users");
 
     // users api ###########################################
+
+    // -------------------------------------register user----------------------------------------------
     app.post("/api/auth/register", async (req, res) => {
       try {
         const { name, email, password } = req.body;
@@ -89,6 +91,44 @@ async function run() {
         res
           .status(500)
           .json({ success: false, message: "Failed to create account" });
+      }
+    });
+
+    // --------------------------------login user-----------------------------------
+    app.post("/api/auth/login", async (req, res) => {
+      try {
+        const { email, password } = req.body;
+
+        if (!email || !password) {
+          return res.status(400).json({
+            success: false,
+            message: "Email and password are required",
+          });
+        }
+
+        const user = await userCollection.findOne({
+          email: email.toLowerCase(),
+        });
+
+        if (!user) {
+          return res
+            .status(401)
+            .json({ success: false, message: "Invalid email or password" });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+          return res
+            .status(401)
+            .json({ success: false, message: "Invalid email or password" });
+        }
+
+        const { password: _, ...userWithoutPassword } = user;
+
+        res.json({ success: true, user: userWithoutPassword });
+      } catch (error) {
+        console.error("POST /api/auth/login error:", error);
+        res.status(500).json({ success: false, message: "Login failed" });
       }
     });
 
