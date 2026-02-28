@@ -9,7 +9,16 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = process.env.MONGO_URI;
 app.use(express.json());
 app.use(cors());
+// middle ware
+function requireAdmin(req, res, next) {
+  const user = req.user; // from JWT middleware
 
+  if (!user || user.role !== "admin") {
+    return res.status(403).json({ success: false, message: "Forbidden" });
+  }
+
+  next();
+}
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -34,6 +43,7 @@ async function run() {
     const myDB = client.db("QuickHire");
     const userCollection = myDB.collection("users");
     const jobsCollection = myDB.collection("jobs");
+    const applicationsCollection = myDB.collection("applications");
 
     // ── AUTH ─── Register──────────────────────────────────────────────
 
@@ -189,7 +199,6 @@ async function run() {
         } = req.query;
         let query = {};
 
-        // Full-text search across title, company, description
         if (search) {
           query.$or = [
             { title: { $regex: search, $options: "i" } },
@@ -197,8 +206,6 @@ async function run() {
             { description: { $regex: search, $options: "i" } },
           ];
         }
-
-        // Exact-ish filters (case-insensitive partial match)
         if (category && category !== "All")
           query.category = { $regex: category, $options: "i" };
         if (type && type !== "All")
@@ -300,6 +307,409 @@ async function run() {
         res
           .status(500)
           .json({ success: false, message: "Failed to fetch job" });
+      }
+    });
+    //post job ----------------------------------------------------------
+    app.post("/api/jobs", async (req, res) => {
+      try {
+        const {
+          title,
+          company,
+          location,
+          category,
+          type,
+          description,
+          requirements,
+          tags,
+          logo,
+          salary_min,
+          salary_max,
+          salary_currency,
+          isFeatured,
+        } = req.body;
+
+        const errors = [];
+        if (!title?.trim()) errors.push("title is required");
+        if (!company?.trim()) errors.push("company is required");
+        if (!location?.trim()) errors.push("location is required");
+        if (!category?.trim()) errors.push("category is required");
+        if (!description?.trim()) errors.push("description is required");
+        if (errors.length > 0)
+          return res.status(400).json({ success: false, errors });
+
+        const now = new Date().toISOString();
+        const newJob = {
+          title: title.trim(),
+          company: company.trim(),
+          location: location.trim(),
+          category: category.trim(),
+          type: type || "Full Time",
+          description: description.trim(),
+          requirements: Array.isArray(requirements) ? requirements : [],
+          tags: Array.isArray(tags) ? tags : [],
+          logo: logo || null,
+          salary_min: salary_min ? parseInt(salary_min) : null,
+          salary_max: salary_max ? parseInt(salary_max) : null,
+          salary_currency: salary_currency || "USD",
+          isFeatured: isFeatured === true || isFeatured === "true",
+          views: 0,
+          applicationCount: 0,
+          created_at: now,
+          updated_at: now,
+        };
+
+        const result = await jobsCollection.insertOne(newJob);
+        res.status(201).json({
+          success: true,
+          message: "Job created successfully",
+          job: { _id: result.insertedId, ...newJob },
+        });
+      } catch (error) {
+        console.error("POST /api/jobs error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to create job" });
+      }
+    });
+
+    // -------------------add to featured -------------------------------------
+    app.patch("/api/jobs/:id/featured", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id))
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid job ID" });
+
+        // Accept explicit value from body; if not sent, toggle
+        let newVal = req.body.isFeatured;
+        if (typeof newVal === "undefined") {
+          const job = await jobsCollection.findOne({ _id: new ObjectId(id) });
+          if (!job)
+            return res
+              .status(404)
+              .json({ success: false, message: "Job not found" });
+          newVal = !job.isFeatured;
+        }
+        // coerce to boolean
+        newVal = newVal === true || newVal === "true";
+
+        const result = await jobsCollection.findOneAndUpdate(
+          { _id: new ObjectId(id) },
+          {
+            $set: { isFeatured: newVal, updated_at: new Date().toISOString() },
+          },
+          { returnDocument: "after" },
+        );
+
+        if (!result)
+          return res
+            .status(404)
+            .json({ success: false, message: "Job not found" });
+
+        res.json({
+          success: true,
+          message: newVal
+            ? "Job marked as featured"
+            : "Job removed from featured",
+          isFeatured: newVal,
+          job: result,
+        });
+      } catch (error) {
+        console.error("PATCH /api/jobs/:id/featured error:", error);
+        res.status(500).json({
+          success: false,
+          message: "Failed to update featured status",
+        });
+      }
+    });
+
+    // ------------------------------ delete job post----------------------
+    app.delete("/api/jobs/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id))
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid job ID" });
+
+        const result = await jobsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        if (result.deletedCount === 0)
+          return res
+            .status(404)
+            .json({ success: false, message: "Job not found" });
+
+        // Cascade: delete all applications for this job
+        await applicationsCollection.deleteMany({ job_id: id });
+
+        res.json({
+          success: true,
+          message: "Job and its applications deleted",
+        });
+      } catch (error) {
+        console.error("DELETE /api/jobs/:id error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to delete job" });
+      }
+    });
+
+    // ── Submit application-----------------------------------------
+    app.post("/api/applications", async (req, res) => {
+      try {
+        const {
+          job_id,
+          name,
+          email,
+          phone,
+          resume_link,
+          cover_note,
+          linkedin_url,
+          portfolio_url,
+        } = req.body;
+
+        const errors = [];
+        if (!job_id) errors.push("job_id is required");
+        if (!name?.trim()) errors.push("name is required");
+        if (!email?.trim()) errors.push("email is required");
+        if (!resume_link?.trim()) errors.push("resume_link is required");
+        if (errors.length > 0)
+          return res.status(400).json({ success: false, errors });
+
+        // Check job exists
+        if (!ObjectId.isValid(job_id))
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid job ID" });
+
+        const job = await jobsCollection.findOne({ _id: new ObjectId(job_id) });
+        if (!job)
+          return res
+            .status(404)
+            .json({ success: false, message: "Job not found" });
+
+        // Prevent duplicate applications from same email for same job
+        const existing = await applicationsCollection.findOne({
+          job_id,
+          email: email.toLowerCase(),
+        });
+        if (existing)
+          return res
+            .status(409)
+            .json({
+              success: false,
+              message: "You have already applied for this job",
+            });
+
+        const now = new Date().toISOString();
+        const newApplication = {
+          job_id,
+          job_title: job.title,
+          company: job.company,
+          name: name.trim(),
+          email: email.toLowerCase().trim(),
+          phone: phone?.trim() || null,
+          resume_link: resume_link.trim(),
+          cover_note: cover_note?.trim() || null,
+          linkedin_url: linkedin_url?.trim() || null,
+          portfolio_url: portfolio_url?.trim() || null,
+          status: "pending",
+          created_at: now,
+          updated_at: now,
+        };
+
+        const result = await applicationsCollection.insertOne(newApplication);
+
+        // Increment applicationCount on the job
+        await jobsCollection.updateOne(
+          { _id: new ObjectId(job_id) },
+          { $inc: { applicationCount: 1 } },
+        );
+
+        res.status(201).json({
+          success: true,
+          message: "Application submitted successfully",
+          application: { _id: result.insertedId, ...newApplication },
+        });
+      } catch (error) {
+        console.error("POST /api/applications error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to submit application" });
+      }
+    });
+
+    // ── Get all applications (admin-----------------------
+    app.get("/api/applications", requireAdmin, async (req, res) => {
+      try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const skip = (page - 1) * limit;
+        const { status, job_id } = req.query;
+
+        const query = {};
+        if (status) query.status = status;
+        if (job_id) query.job_id = job_id;
+
+        const total = await applicationsCollection.countDocuments(query);
+        const applications = await applicationsCollection
+          .find(query)
+          .sort({ created_at: -1 })
+          .skip(skip)
+          .limit(limit)
+          .toArray();
+
+        res.json({
+          success: true,
+          applications,
+          pagination: {
+            total,
+            page,
+            limit,
+            totalPages: Math.ceil(total / limit),
+          },
+        });
+      } catch (error) {
+        console.error("GET /api/applications error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch applications" });
+      }
+    });
+
+    // ── Get applications by email (user's own) -------------------
+    app.get("/api/applications/my", async (req, res) => {
+      try {
+        const { email } = req.query;
+        if (!email)
+          return res
+            .status(400)
+            .json({ success: false, message: "Email is required" });
+
+        const applications = await applicationsCollection
+          .find({ email: email.toLowerCase() })
+          .sort({ created_at: -1 })
+          .toArray();
+
+        res.json({ success: true, applications });
+      } catch (error) {
+        console.error("GET /api/applications/my error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch applications" });
+      }
+    });
+
+    // ── Update application status (admin-------------------
+    app.patch(
+      "/api/applications/:id/status",
+      requireAdmin,
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { status } = req.body;
+
+          if (!ObjectId.isValid(id))
+            return res
+              .status(400)
+              .json({ success: false, message: "Invalid application ID" });
+
+          const validStatuses = [
+            "pending",
+            "reviewed",
+            "shortlisted",
+            "rejected",
+            "hired",
+          ];
+          if (!validStatuses.includes(status))
+            return res
+              .status(400)
+              .json({ success: false, message: "Invalid status" });
+
+          const result = await applicationsCollection.findOneAndUpdate(
+            { _id: new ObjectId(id) },
+            { $set: { status, updated_at: new Date().toISOString() } },
+            { returnDocument: "after" },
+          );
+
+          if (!result)
+            return res
+              .status(404)
+              .json({ success: false, message: "Application not found" });
+
+          res.json({
+            success: true,
+            message: "Status updated",
+            application: result,
+          });
+        } catch (error) {
+          console.error("PATCH /api/applications/:id/status error:", error);
+          res
+            .status(500)
+            .json({ success: false, message: "Failed to update status" });
+        }
+      },
+    );
+
+    // f--------------─ Admin stats----------------------------------
+
+    app.get("/api/admin/stats", requireAdmin, async (req, res) => {
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayISO = today.toISOString();
+
+        const [
+          totalJobs,
+          totalApplications,
+          newJobsToday,
+          newApplicationsToday,
+          applicationsByStatus,
+          topCategories,
+        ] = await Promise.all([
+          jobsCollection.countDocuments(),
+          applicationsCollection.countDocuments(),
+          jobsCollection.countDocuments({ created_at: { $gte: todayISO } }),
+          applicationsCollection.countDocuments({
+            created_at: { $gte: todayISO },
+          }),
+          applicationsCollection
+            .aggregate([
+              { $group: { _id: "$status", count: { $sum: 1 } } },
+              { $project: { _id: 0, status: "$_id", count: 1 } },
+            ])
+            .toArray(),
+          jobsCollection
+            .aggregate([
+              { $group: { _id: "$category", count: { $sum: 1 } } },
+              { $sort: { count: -1 } },
+              { $limit: 5 },
+              { $project: { _id: 0, category: "$_id", count: 1 } },
+            ])
+            .toArray(),
+        ]);
+
+        const companiesList = await jobsCollection.distinct("company");
+
+        res.json({
+          success: true,
+          stats: {
+            totalJobs,
+            totalApplications,
+            totalCompanies: companiesList.length,
+            newJobsToday,
+            newApplicationsToday,
+            applicationsByStatus,
+            topCategories,
+          },
+        });
+      } catch (error) {
+        console.error("GET /api/admin/stats error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch stats" });
       }
     });
 
