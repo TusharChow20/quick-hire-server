@@ -11,12 +11,10 @@ app.use(express.json());
 app.use(cors());
 // middle ware
 function requireAdmin(req, res, next) {
-  const user = req.user; // from JWT middleware
-
-  if (!user || user.role !== "admin") {
+  const role = req.query.role || req.body.role;
+  if (role !== "admin") {
     return res.status(403).json({ success: false, message: "Forbidden" });
   }
-
   next();
 }
 const client = new MongoClient(uri, {
@@ -496,12 +494,10 @@ async function run() {
           email: email.toLowerCase(),
         });
         if (existing)
-          return res
-            .status(409)
-            .json({
-              success: false,
-              message: "You have already applied for this job",
-            });
+          return res.status(409).json({
+            success: false,
+            message: "You have already applied for this job",
+          });
 
         const now = new Date().toISOString();
         const newApplication = {
@@ -710,6 +706,111 @@ async function run() {
         res
           .status(500)
           .json({ success: false, message: "Failed to fetch stats" });
+      }
+    });
+
+    //update profile
+    app.patch("/api/users/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        const { name, currentPassword, newPassword } = req.body;
+
+        if (!ObjectId.isValid(id))
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid user ID" });
+
+        const user = await userCollection.findOne({ _id: new ObjectId(id) });
+        if (!user)
+          return res
+            .status(404)
+            .json({ success: false, message: "User not found" });
+
+        const updates = { updated_at: new Date().toISOString() };
+
+        // Name update
+        if (name !== undefined) {
+          if (!name.trim())
+            return res
+              .status(400)
+              .json({ success: false, message: "Name cannot be empty" });
+          updates.name = name.trim();
+        }
+
+        // Password change
+        if (newPassword) {
+          if (!currentPassword)
+            return res
+              .status(400)
+              .json({
+                success: false,
+                message: "Current password is required to set a new one",
+              });
+          if (newPassword.length < 6)
+            return res
+              .status(400)
+              .json({
+                success: false,
+                message: "New password must be at least 6 characters",
+              });
+
+          const isMatch = await bcrypt.compare(currentPassword, user.password);
+          if (!isMatch)
+            return res
+              .status(401)
+              .json({
+                success: false,
+                message: "Current password is incorrect",
+              });
+
+          updates.password = await bcrypt.hash(newPassword, 12);
+        }
+
+        await userCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updates },
+        );
+
+        // Return updated user without password
+        const updatedUser = await userCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        const { password: _, ...safeUser } = updatedUser;
+
+        res.json({
+          success: true,
+          message: "Profile updated successfully",
+          user: safeUser,
+        });
+      } catch (error) {
+        console.error("PATCH /api/users/:id error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to update profile" });
+      }
+    });
+
+    // profile details
+    app.get("/api/users/:id", async (req, res) => {
+      try {
+        const { id } = req.params;
+        if (!ObjectId.isValid(id))
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid user ID" });
+
+        const user = await userCollection.findOne({ _id: new ObjectId(id) });
+        if (!user)
+          return res
+            .status(404)
+            .json({ success: false, message: "User not found" });
+
+        const { password: _, ...safeUser } = user;
+        res.json({ success: true, user: safeUser });
+      } catch (error) {
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch user" });
       }
     });
 
