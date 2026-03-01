@@ -35,8 +35,8 @@ app.listen(port, () => {
 
 async function run() {
   try {
-    await client.connect();
-    await client.db("admin").command({ ping: 1 });
+    // await client.connect();
+    // await client.db("admin").command({ ping: 1 });
 
     const myDB = client.db("QuickHire");
     const userCollection = myDB.collection("users");
@@ -740,28 +740,22 @@ async function run() {
         // Password change
         if (newPassword) {
           if (!currentPassword)
-            return res
-              .status(400)
-              .json({
-                success: false,
-                message: "Current password is required to set a new one",
-              });
+            return res.status(400).json({
+              success: false,
+              message: "Current password is required to set a new one",
+            });
           if (newPassword.length < 6)
-            return res
-              .status(400)
-              .json({
-                success: false,
-                message: "New password must be at least 6 characters",
-              });
+            return res.status(400).json({
+              success: false,
+              message: "New password must be at least 6 characters",
+            });
 
           const isMatch = await bcrypt.compare(currentPassword, user.password);
           if (!isMatch)
-            return res
-              .status(401)
-              .json({
-                success: false,
-                message: "Current password is incorrect",
-              });
+            return res.status(401).json({
+              success: false,
+              message: "Current password is incorrect",
+            });
 
           updates.password = await bcrypt.hash(newPassword, 12);
         }
