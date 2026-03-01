@@ -52,7 +52,7 @@ PORT=5000
 ### Run Locally
 
 ```bash
-node index.js
+nodemon index.js
 ```
 
 Server runs at **http://localhost:5000**
